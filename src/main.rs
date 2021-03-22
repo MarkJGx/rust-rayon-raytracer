@@ -4,6 +4,7 @@ extern crate glam;
 extern crate image as im;
 extern crate piston_window;
 
+use dyn_clone::DynClone;
 use glam::*;
 use piston_window::clear;
 use piston_window::image;
@@ -32,6 +33,15 @@ lazy_static! {
     static ref ONE: Vec3A = Vec3A::new(1.0, 1.0, 1.0);
 }
 
+fn is_nearly_zero(vector: &Vec3A) -> bool {
+    let s: f32 = 1e-8;
+    return (vector.x < s) && (vector.y < s) && (vector.z < s);
+}
+
+fn reflect(v: &Vec3A, normal: &Vec3A) -> Vec3A {
+    return *v - (2.0 * v.dot(*normal)) * *normal;
+}
+
 #[inline]
 fn random() -> f32 {
     return fastrand::f32();
@@ -43,7 +53,7 @@ fn random_minmax(min: f32, max: f32) -> f32 {
     return (m * (max - min)) + min;
 }
 
-fn random_in_unit_sphere() -> Vec3A {
+fn random_unit_in_sphere() -> Vec3A {
     let min = -1.0;
     let max = 1.0;
 
@@ -62,6 +72,19 @@ fn random_in_unit_sphere() -> Vec3A {
     }
 
     return point;
+}
+
+fn random_unit_vector() -> Vec3A {
+    return random_unit_in_sphere().normalize();
+}
+
+fn random_in_hemisphere(normal: Vec3A) -> Vec3A {
+    let random_unit = random_unit_in_sphere();
+    if random_unit.dot(normal) > 0.0 {
+        return random_unit;
+    } else {
+        return -random_unit;
+    }
 }
 
 struct Camera {
@@ -104,6 +127,7 @@ impl Camera {
     }
 }
 
+#[derive(Default)]
 struct Ray {
     origin: Vec3A,
     direction: Vec3A,
@@ -113,24 +137,111 @@ impl Ray {
     fn at(&self, t: f32) -> Vec3A {
         return self.origin + (self.direction * t);
     }
+
+    fn new(origin: Vec3A, direction: Vec3A) -> Ray {
+        let new: Ray = Ray {
+            origin: origin,
+            direction: direction,
+        };
+
+        return new;
+    }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct HitRecord {
     point: Vec3A,
     normal: Vec3A,
     hit_dist: f32,
     front_face: bool,
+    material: Box<dyn MaterialTrait>,
 }
 
 impl Default for HitRecord {
     fn default() -> HitRecord {
+        let material = Lambertian {
+            albedo: Vec3A::new(0.5, 0.5, 0.5),
+        };
+
         HitRecord {
             point: *ZERO,
             normal: *ZERO,
             hit_dist: 0.0,
             front_face: true,
+            material: Box::new(material),
         }
+    }
+}
+
+trait MaterialTrait: DynClone {
+    fn scatter(
+        &self,
+        ray: &Ray,
+        hit_record: &HitRecord,
+        attenuation: &mut Color,
+        scattered: &mut Ray,
+    ) -> bool;
+}
+dyn_clone::clone_trait_object!(MaterialTrait);
+
+#[derive(Clone)]
+struct Lambertian {
+    albedo: Color,
+}
+
+impl MaterialTrait for Lambertian {
+    fn scatter(
+        &self,
+        ray: &Ray,
+        hit_record: &HitRecord,
+        attenuation: &mut Color,
+        scattered: &mut Ray,
+    ) -> bool {
+        let mut scatter_direction = hit_record.normal + random_unit_vector();
+
+        if is_nearly_zero(&scatter_direction) {
+            scatter_direction = hit_record.normal;
+        }
+
+        attenuation.x = self.albedo.x;
+        attenuation.y = self.albedo.y;
+        attenuation.z = self.albedo.z;
+
+        scattered.origin = hit_record.point;
+        scattered.direction = scatter_direction;
+
+        return true;
+    }
+}
+
+#[derive(Clone)]
+struct Metal {
+    albedo: Color,
+    fuzz: f32,
+}
+
+impl MaterialTrait for Metal {
+    fn scatter(
+        &self,
+        ray: &Ray,
+        hit_record: &HitRecord,
+        attenuation: &mut Color,
+        scattered: &mut Ray,
+    ) -> bool {
+        let reflected: Vec3A = reflect(&ray.direction.normalize(), &hit_record.normal);
+        scattered.origin = hit_record.point;
+
+        let mut computed_fuzz: Vec3A = *ZERO;
+        if self.fuzz > 0.0 {
+            computed_fuzz = self.fuzz * random_unit_in_sphere();
+        }
+        scattered.direction = reflected + (computed_fuzz);
+
+        attenuation.x = self.albedo.x;
+        attenuation.y = self.albedo.y;
+        attenuation.z = self.albedo.z;
+
+        return scattered.direction.dot(hit_record.normal) > 0.0;
     }
 }
 
@@ -152,6 +263,7 @@ trait Hittable {
 struct Sphere {
     radius: f32,
     origin: Vec3A,
+    material: Box<dyn MaterialTrait>,
 }
 
 impl Hittable for Sphere {
@@ -184,6 +296,7 @@ impl Hittable for Sphere {
         let outward_normal: Vec3A =
             (hit_record.point - self.origin) / self.radius.max(f32::EPSILON);
         hit_record.set_face_normal(ray, &outward_normal);
+        hit_record.material = dyn_clone::clone_box(&*self.material);
         return true;
     }
 }
@@ -208,6 +321,7 @@ impl Hittable for HittableScene {
                 hit_record.point = temp_hit_record.point;
                 hit_record.hit_dist = temp_hit_record.hit_dist;
                 hit_record.front_face = temp_hit_record.front_face;
+                hit_record.material = dyn_clone::clone_box(&*temp_hit_record.material);
             }
         }
 
@@ -224,18 +338,15 @@ fn ray_color(ray: &Ray, scene: &HittableScene, depth: &i32) -> Color {
         return *ZERO;
     }
 
-    if scene.hit(ray, 0.0, f32::INFINITY, &mut hit_record) {
-        let target = hit_record.point + hit_record.normal + random_in_unit_sphere();
-
-        return 0.5
-            * ray_color(
-                &Ray {
-                    origin: hit_record.point,
-                    direction: target - hit_record.point,
-                },
-                scene,
-                &(*depth - 1),
-            );
+    if scene.hit(ray, 0.001, f32::INFINITY, &mut hit_record) {
+        let mut scattered: Ray = Default::default();
+        let mut attenuation: Color = Vec3A::new(0.0, 0.0, 0.0);
+        if hit_record
+            .material
+            .scatter(&ray, &hit_record, &mut attenuation, &mut scattered)
+        {
+            return attenuation * ray_color(&scattered, &scene, &(*depth - 1));
+        }
     }
 
     // background
@@ -252,12 +363,12 @@ fn get_epoch_ms() -> u128 {
 
 fn main() {
     let aspect_ratio = 9.0 / 16.0;
-    let image_width: i32 = (200.0) as i32;
+    let image_width: i32 = (128.0) as i32;
     let image_height: i32 = ((image_width as f32) * aspect_ratio) as i32;
 
     let camera: Camera = Camera::new(aspect_ratio);
 
-    let window_scale = 4.0;
+    let window_scale = 8.0;
 
     let mut window: PistonWindow = WindowSettings::new(
         "Raytracer",
@@ -294,19 +405,44 @@ fn main() {
     let mut scene: HittableScene = HittableScene {
         hittables_list: Vec::new(),
     };
-    scene.hittables_list.push(Box::new(Sphere {
-        origin: Vec3A::new(0.0, 0.0, -1.0),
-        radius: 0.5,
-    }));
 
+    // Ground
     scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(0.0, -100.5, -1.0),
         radius: 100.0,
+        material: Box::new(Lambertian {
+            albedo: Color::new(0.4, 0.8, 0.2),
+        }),
     }));
 
-    let max_depth: u32 = 2;
+    scene.hittables_list.push(Box::new(Sphere {
+        origin: Vec3A::new(0.0, 0.0, -1.0),
+        radius: 0.5,
+        material: Box::new(Lambertian {
+            albedo: Color::new(0.7, 0.3, 0.3),
+        }),
+    }));
 
-    let samples_per_pixel: i32 = 100;
+    scene.hittables_list.push(Box::new(Sphere {
+        origin: Vec3A::new(-1.0, 0.0, -1.0),
+        radius: 0.5,
+        material: Box::new(Metal {
+            albedo: Color::new(0.8, 0.8, 0.8),
+            fuzz: 0.3,
+        }),
+    }));
+
+    scene.hittables_list.push(Box::new(Sphere {
+        origin: Vec3A::new(1.0, 0.0, -1.0),
+        radius: 0.5,
+        material: Box::new(Metal {
+            albedo: Color::new(0.2, 0.54, 0.8),
+            fuzz: 1.0,
+        }),
+    }));
+    let max_depth: u32 = 10;
+
+    let samples_per_pixel: i32 = 50;
 
     while let Some(event) = window.next() {
         if let Some(_) = event.render_args() {
@@ -323,8 +459,14 @@ fn main() {
             let mut write_color = |position: &UVec2, color: &Color, samples_per_pixel: &i32| {
                 let mut scaled_color = *color;
 
+                // Divide the color by the number of samples and
                 let scale = 1.0 / *samples_per_pixel as f32;
                 scaled_color *= scale;
+
+                // Gamma-correct for gamma=2.0
+                scaled_color.x = scaled_color.x.sqrt();
+                scaled_color.y = scaled_color.y.sqrt();
+                scaled_color.z = scaled_color.z.sqrt();
 
                 canvas.put_pixel(
                     position.x,
