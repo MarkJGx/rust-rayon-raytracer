@@ -16,6 +16,7 @@ use piston_window::Texture;
 use piston_window::TextureContext;
 use piston_window::TextureSettings;
 use piston_window::WindowSettings;
+use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
 type Color = Vec3;
 
@@ -24,6 +25,45 @@ lazy_static! {
     static ref UP: Vec3 = Vec3::new(0.0, 0.0, 1.0);
     static ref DOWN: Vec3 = Vec3::new(0.0, 0.0, -1.0);
     static ref ONE: Vec3 = Vec3::new(1.0, 1.0, 1.0);
+}
+
+struct Camera {
+    origin: Vec3,
+    lower_left_corner: Vec3,
+    horizontal: Vec3,
+    vertical: Vec3,
+}
+
+impl Camera {
+    fn new(aspect_ratio: f32) -> Camera {
+        let viewport_width = 2.0;
+        let viewport_height = viewport_width / aspect_ratio;
+        let focal_length = 1.0;
+        let origin: Vec3 = Vec3::new(0.0, 0.0, 0.0);
+        let horizontal: Vec3 = Vec3::new(viewport_width, 0.0, 0.0);
+        let vertical: Vec3 = Vec3::new(0.0, viewport_height, 0.0);
+        let lower_left_corner: Vec3 = origin
+            - Vec3::new(0.0, viewport_width, 0.0) / 2.0
+            - Vec3::new(viewport_height, 0.0, 0.0) / 2.0
+            - Vec3::new(0.0, 0.0, focal_length);
+
+        return Camera {
+            origin: origin,
+            lower_left_corner: lower_left_corner,
+            horizontal: horizontal,
+            vertical: vertical,
+        };
+    }
+
+    fn get_ray(&self, u: f32, v: f32) -> Ray {
+        let ray = Ray {
+            origin: self.origin,
+            direction: self.lower_left_corner + (u * self.horizontal) + (v * self.vertical)
+                - self.origin,
+        };
+
+        return ray;
+    }
 }
 
 struct Ray {
@@ -155,23 +195,10 @@ fn get_epoch_ms() -> u128 {
 
 fn main() {
     let aspect_ratio = 9.0 / 16.0;
-
     let image_width: i32 = 400;
     let image_height: i32 = ((image_width as f32) * aspect_ratio) as i32;
 
-    let viewport_width = 2.0;
-    let viewport_height = viewport_width / aspect_ratio;
-
-    let focal_length = 1.0;
-
-    let origin: Vec3 = Vec3::new(0.0, 0.0, 0.0);
-    let horizontal: Vec3 = Vec3::new(viewport_width, 0.0, 0.0);
-    let vertical: Vec3 = Vec3::new(0.0, viewport_height, 0.0);
-
-    let lower_left_corner: Vec3 = origin
-        - Vec3::new(0.0, viewport_width, 0.0) / 2.0
-        - Vec3::new(viewport_height, 0.0, 0.0) / 2.0
-        - Vec3::new(0.0, 0.0, focal_length);
+    let camera: Camera = Camera::new(aspect_ratio);
 
     let mut window: PistonWindow =
         WindowSettings::new("Raytracer", (image_width as u32, image_height as u32))
@@ -213,6 +240,7 @@ fn main() {
         radius: 100.0,
     }));
 
+    let mut rng = rand::thread_rng();
     while let Some(event) = window.next() {
         if let Some(_) = event.render_args() {
             texture.update(&mut texture_context, &canvas).unwrap();
@@ -241,10 +269,7 @@ fn main() {
                 for x in 0..image_width {
                     let u: f32 = x as f32 / (image_height as f32 - 1.0);
                     let v: f32 = y as f32 / (image_width as f32 - 1.0);
-                    let ray = Ray {
-                        origin: origin,
-                        direction: lower_left_corner + (u * horizontal) + (v * vertical) - origin,
-                    };
+                    let ray = camera.get_ray(u, v);
                     let color: Color = ray_color(&ray, &scene);
                     write_color(UVec2::new(x as u32, y as u32), color);
                 }
@@ -261,6 +286,8 @@ fn main() {
                     (1000.0 / (delta / 10.0)) as i32,
                     delta / 10.0
                 );
+
+                println!("rng {}", rng.gen_range(0.0..1.0));
             }
         }
     }
