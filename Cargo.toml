@@ -1,0 +1,14 @@
+[package]
+name = "raytrace"
+version = "0.1.0"
+authors = ["MarkJGx <mark.jg@chemicalheads.com>"]
+edition = "2018"
+
+[dependencies]
+piston_window = "*"
+image = "*"
+vecmath= "*"
+piston-graphics_api_version="*"
+glam="*"
+rayon = "1.5"
+lazy_static = "1.4.0"
