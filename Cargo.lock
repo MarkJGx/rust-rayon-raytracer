@@ -395,6 +395,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 
 [[package]]
+name = "fastrand"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca5faf057445ce5c9d4329e382b2ce7ca38550ef3b73a5348362d5f24e0c7fe3"
+dependencies = [
+ "instant",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1314,6 +1323,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "random-fast-rng"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95784e84a571f44dc7fd4f0d3ab3f493d3c07b90d695450890490a89d83905a3"
+dependencies = [
+ "random-trait",
+]
+
+[[package]]
+name = "random-trait"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d3186af2e04abe646626095b37293d7485027e8591c56430dfda49894a28447"
+
+[[package]]
 name = "raw-window-handle"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1351,12 +1375,14 @@ dependencies = [
 name = "raytrace"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "glam",
  "image",
  "lazy_static",
  "piston-graphics_api_version",
  "piston_window",
  "rand",
+ "random-fast-rng",
  "rayon",
  "vecmath",
 ]
