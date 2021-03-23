@@ -435,7 +435,7 @@ fn main() {
     let image_height: u32 = ((image_width as f32) * aspect_ratio) as u32;
 
     let max_depth: u32 = 4;
-    let samples_per_pixel: i32 = 5;
+    let samples_per_pixel: i32 = 1;
 
     let mut camera: Camera = Camera::new(
         Vec3A::new(0.0, 0.0, 1.0),
@@ -600,8 +600,7 @@ fn main() {
             for (index, color) in pixels.iter().enumerate() {
                 let x: u32 = index as u32 % image_width;
                 let y: u32 = (index as f32 / image_width as f32) as u32;
-                let mut new_color = *color;
-                write_color(&UVec2::new(x, y), &new_color, &samples_per_pixel);
+                write_color(&UVec2::new(x, y), &color, &samples_per_pixel);
             }
 
             let new_time = get_epoch_ms();
