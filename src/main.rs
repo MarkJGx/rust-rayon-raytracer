@@ -10,14 +10,14 @@ extern crate rayon;
 use dyn_clone::DynClone;
 use fastrand::*;
 use glam::*;
-use piston_window::clear;
-use piston_window::image;
-use piston_window::math::Matrix2d;
 use piston_window::*;
 use rayon::prelude::*;
+use std::iter::{self, Sum};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Color = Vec3A;
+
+struct Vec3ASummable(Vec3A);
 
 fn get_epoch_ms() -> u128 {
     SystemTime::now()
@@ -28,8 +28,8 @@ fn get_epoch_ms() -> u128 {
 
 lazy_static! {
     static ref ZERO: Vec3A = Vec3A::new(0.0, 0.0, 0.0);
-    static ref UP: Vec3A = Vec3A::new(0.0, 0.0, 1.0);
-    static ref DOWN: Vec3A = Vec3A::new(0.0, 0.0, -1.0);
+    static ref UP: Vec3A = Vec3A::new(0.0, 1.0, 0.0);
+    static ref DOWN: Vec3A = Vec3A::new(0.0, -1.0, 0.0);
     static ref ONE: Vec3A = Vec3A::new(1.0, 1.0, 1.0);
 }
 
@@ -128,15 +128,14 @@ impl Camera {
         let viewport_height = 2.0 * h;
         let viewport_width = aspect_ratio * viewport_height;
 
-        let direciton_w = (look_from - look_at).normalize();
-        let u = up.cross(direciton_w).normalize();
-        let v = direciton_w.cross(u);
+        let direction_w = (look_from - look_at).normalize();
+        let u = up.cross(direction_w).normalize();
+        let v = direction_w.cross(u);
 
-        let focal_length = 1.0;
         let origin: Vec3A = look_from;
         let horizontal: Vec3A = viewport_width * u;
         let vertical: Vec3A = viewport_height * v;
-        let lower_left_corner: Vec3A = origin - (horizontal / 2.0) - (vertical / 2.0) - direciton_w;
+        let lower_left_corner: Vec3A = origin - (horizontal / 2.0) - (vertical / 2.0) - direction_w;
 
         return Camera {
             origin: origin,
@@ -437,11 +436,16 @@ fn main() {
     let max_depth: u32 = 4;
     let samples_per_pixel: i32 = 1;
 
+    let mut vertical_fov = 60.0;
+
+    let mut camera_position: Vec3A = *ZERO;
+    let mut camera_direction: Vec3A = *ONE * 2.0;
+
     let mut camera: Camera = Camera::new(
-        Vec3A::new(0.0, 0.0, 1.0),
-        Vec3A::new(0.0, 0.0, -1.0),
-        Vec3A::new(0.0, 1.0, 0.0),
-        90.0,
+        camera_position,
+        camera_position + camera_direction,
+        *UP,
+        vertical_fov,
         aspect_ratio,
     );
     let window_scale = 2.0;
@@ -459,6 +463,8 @@ fn main() {
     .graphics_api(OpenGL::V3_2)
     .build()
     .unwrap();
+
+    window.set_capture_cursor(true);
 
     println!(
         "Created canvas width {}, height {}",
@@ -531,8 +537,55 @@ fn main() {
 
     let mut tick: i32 = 0;
 
+    let speed = 0.01;
+    let mouse_speed = 0.001;
+
+    let mut pitch: f32 = 0.0;
+    let mut yaw: f32 = 0.0;
+
     let pixel_amount = image_width * image_height;
     while let Some(event) = window.next() {
+        if let Some(event) = event.mouse_relative_args() {
+            let mouse_y: f32 = event[0] as f32;
+            let mouse_x: f32 = event[1] as f32;
+
+            pitch += mouse_x * -(delta * mouse_speed);
+            yaw += mouse_y * (delta * mouse_speed);
+
+            // yaw is x;
+            camera_direction.x = f32::cos(yaw.to_radians()) * f32::cos(pitch.to_radians());
+            camera_direction.y = f32::sin(pitch.to_radians());
+            camera_direction.z = f32::sin(yaw.to_radians()) * f32::cos(pitch.to_radians());
+
+            camera_direction = camera_direction.normalize();
+        }
+
+        if let Some(event) = event.press_args() {
+            if event == Button::Keyboard(Key::W) {
+                camera_position += camera_direction.normalize() * (speed * delta);
+            }
+
+            if event == Button::Keyboard(Key::S) {
+                camera_position -= camera_direction.normalize() * (speed * delta);
+            }
+
+            if event == Button::Keyboard(Key::A) {
+                camera_position += UP.cross(camera_direction).normalize() * (speed * delta);
+            }
+
+            if event == Button::Keyboard(Key::D) {
+                camera_position -= UP.cross(camera_direction).normalize() * (speed * delta);
+            }
+        }
+
+        camera = Camera::new(
+            camera_position,
+            camera_position + camera_direction,
+            *UP,
+            vertical_fov,
+            aspect_ratio,
+        );
+
         if let Some(_) = event.render_args() {
             texture.update(&mut texture_context, &canvas).unwrap();
             window.draw_2d(&event, |context, graphics, device| {
@@ -576,24 +629,25 @@ fn main() {
                     let x: u32 = pixel_index % image_width;
                     let y: u32 = (pixel_index as f32 / image_width as f32) as u32;
 
-                    let mut color: Color = Color::new(0.0, 0.0, 0.0);
-                    for sample in 0..samples_per_pixel {
-                        let mut rng_x = 0.0;
-                        let mut rng_y = 0.0;
+                    let colors: Vec<Color> = (0..samples_per_pixel)
+                        .into_par_iter()
+                        .map(|_| {
+                            let mut rng_x = 0.0;
+                            let mut rng_y = 0.0;
+                            if samples_per_pixel > 1 {
+                                rng_x = random();
+                                rng_y = random();
+                            }
+                            let u: f32 = ((x as f32) + rng_x) / (image_height as f32 - 1.0);
+                            let v: f32 = ((y as f32) + rng_y) / (image_width as f32 - 1.0);
+                            let ray: Ray = camera.get_ray(u, v);
+                            return ray_color(&ray, &scene, &(max_depth as i32));
+                        })
+                        .collect();
 
-                        if (samples_per_pixel > 1) {
-                            rng_x = random();
-                            rng_y = random();
-                        }
+                    let final_color = colors.iter().sum();
 
-                        let u: f32 = ((x as f32) + rng_x) / (image_height as f32 - 1.0);
-                        let v: f32 = ((y as f32) + rng_y) / (image_width as f32 - 1.0);
-
-                        let ray: Ray = camera.get_ray(u, v);
-                        color += ray_color(&ray, &scene, &(max_depth as i32));
-                    }
-
-                    return color;
+                    return final_color;
                 })
                 .collect();
 
