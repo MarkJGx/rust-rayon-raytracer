@@ -33,11 +33,13 @@ lazy_static! {
     static ref ONE: Vec3A = Vec3A::new(1.0, 1.0, 1.0);
 }
 
+#[inline]
 fn is_nearly_zero(vector: &Vec3A) -> bool {
     let s: f32 = 1e-8;
     return (vector.x < s) && (vector.y < s) && (vector.z < s);
 }
 
+#[inline]
 fn reflectance(cosine: &f32, ref_idx: &f32) -> f32 {
     // Use Schlick's approximation for reflectance.
     let mut r0 = (1.0 - *ref_idx) / (1.0 + *ref_idx);
@@ -45,6 +47,7 @@ fn reflectance(cosine: &f32, ref_idx: &f32) -> f32 {
     return r0 + (1.0 - r0) * (1.0 - *cosine).powf(5.0);
 }
 
+#[inline]
 fn refract(uv: &Vec3A, normal: &Vec3A, etai_over_etat: &f32) -> Vec3A {
     // no idea how this works.
     let cos_theta = f32::min(((-*uv).dot(*normal)), 1.0);
@@ -53,6 +56,7 @@ fn refract(uv: &Vec3A, normal: &Vec3A, etai_over_etat: &f32) -> Vec3A {
     return r_out_perp + r_out_parallel;
 }
 
+#[inline]
 fn reflect(v: &Vec3A, normal: &Vec3A) -> Vec3A {
     return *v - (2.0 * v.dot(*normal)) * *normal;
 }
@@ -88,10 +92,12 @@ fn random_unit_in_sphere() -> Vec3A {
     return Vec3A::new(x, y, z);
 }
 
+#[inline]
 fn random_unit_vector() -> Vec3A {
     return random_unit_in_sphere().normalize();
 }
 
+#[inline]
 fn random_in_hemisphere(normal: Vec3A) -> Vec3A {
     let random_unit = random_unit_in_sphere();
     if random_unit.dot(normal) > 0.0 {
@@ -159,10 +165,12 @@ struct Ray {
 }
 
 impl Ray {
+    #[inline]
     fn at(&self, t: f32) -> Vec3A {
         return self.origin + (self.direction * t);
     }
 
+    #[inline]
     fn new(origin: Vec3A, direction: Vec3A) -> Ray {
         let new: Ray = Ray {
             origin: origin,
@@ -215,6 +223,7 @@ struct Lambertian {
 }
 
 impl MaterialTrait for Lambertian {
+    #[inline]
     fn scatter(
         &self,
         ray: &Ray,
@@ -244,6 +253,7 @@ struct Metal {
 }
 
 impl MaterialTrait for Metal {
+    #[inline]
     fn scatter(
         &self,
         ray: &Ray,
@@ -272,6 +282,7 @@ struct Dielectric {
 }
 
 impl MaterialTrait for Dielectric {
+    #[inline]
     fn scatter(
         &self,
         ray: &Ray,
@@ -330,6 +341,7 @@ struct Sphere {
 }
 
 impl Hittable for Sphere {
+    #[inline]
     fn hit(&self, ray: &Ray, t_min: f32, t_max: f32, hit_record: &mut HitRecord) -> bool {
         let oc: Vec3A = ray.origin - self.origin;
         let a = ray.direction.length_squared();
@@ -365,7 +377,7 @@ impl Hittable for Sphere {
 }
 
 pub struct HittableScene {
-    hittables_list: Vec<Sphere>,
+    hittables_list: Vec<Box<dyn Hittable + Send + Sync>>,
 }
 
 impl Hittable for HittableScene {
@@ -419,7 +431,7 @@ fn ray_color(ray: &Ray, scene: &HittableScene, depth: &i32) -> Color {
 
 fn main() {
     let aspect_ratio = 9.0 / 16.0;
-    let image_width: u32 = 256;
+    let image_width: u32 = 256 * 2;
     let image_height: u32 = ((image_width as f32) * aspect_ratio) as u32;
 
     let max_depth: u32 = 4;
@@ -432,7 +444,7 @@ fn main() {
         90.0,
         aspect_ratio,
     );
-    let window_scale = 4.0;
+    let window_scale = 2.0;
 
     let mut window: PistonWindow = WindowSettings::new(
         "Rust Rayon Raytracer",
@@ -483,36 +495,36 @@ fn main() {
     // }));
 
     //Ground
-    scene.hittables_list.push(Sphere {
+    scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(0.0, -100.5, -1.0),
         radius: 100.0,
         material: Box::new(Lambertian {
             albedo: Color::new(0.8, 0.8, 0.0),
         }),
-    });
+    }));
 
-    scene.hittables_list.push(Sphere {
+    scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(0.0, 0.0, -1.0),
         radius: 0.5,
         material: Box::new(Lambertian {
             albedo: Color::new(0.1, 0.2, 0.5),
         }),
-    });
+    }));
 
-    scene.hittables_list.push(Sphere {
+    scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(-1.0, 0.0, -1.0),
         radius: -0.4,
         material: Box::new(Dielectric { ir: 1.5 }),
-    });
+    }));
 
-    scene.hittables_list.push(Sphere {
+    scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(1.0, 0.0, -1.0),
         radius: 0.5,
         material: Box::new(Metal {
             albedo: Color::new(0.8, 0.6, 0.2),
             fuzz: 0.0,
         }),
-    });
+    }));
 
     let mut time: u128 = get_epoch_ms();
     let mut delta: f32 = 0.0;
