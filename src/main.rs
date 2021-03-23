@@ -1,31 +1,30 @@
+// Following https://raytracing.github.io/books/RayTracingInOneWeekend.html
+
 #[macro_use]
 extern crate lazy_static;
 extern crate glam;
 extern crate image as im;
 extern crate piston_window;
+extern crate rayon;
 
 use dyn_clone::DynClone;
+use fastrand::*;
 use glam::*;
 use piston_window::clear;
 use piston_window::image;
 use piston_window::math::Matrix2d;
-use piston_window::G2dTexture;
-use piston_window::OpenGL;
-use piston_window::PistonWindow;
-use piston_window::RenderEvent;
-use piston_window::Texture;
-use piston_window::TextureContext;
-use piston_window::TextureSettings;
-use piston_window::Transformed;
-use piston_window::WindowSettings;
-use std::cmp;
+use piston_window::*;
+use rayon::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fastrand::*;
-use rand::rngs::mock::StepRng;
-use rand::Rng;
-
 type Color = Vec3A;
+
+fn get_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}
 
 lazy_static! {
     static ref ZERO: Vec3A = Vec3A::new(0.0, 0.0, 0.0);
@@ -39,12 +38,28 @@ fn is_nearly_zero(vector: &Vec3A) -> bool {
     return (vector.x < s) && (vector.y < s) && (vector.z < s);
 }
 
+fn reflectance(cosine: &f32, ref_idx: &f32) -> f32 {
+    // Use Schlick's approximation for reflectance.
+    let mut r0 = (1.0 - *ref_idx) / (1.0 + *ref_idx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * (1.0 - *cosine).powf(5.0);
+}
+
+fn refract(uv: &Vec3A, normal: &Vec3A, etai_over_etat: &f32) -> Vec3A {
+    // no idea how this works.
+    let cos_theta = f32::min(((-*uv).dot(*normal)), 1.0);
+    let r_out_perp: Vec3A = *etai_over_etat * (*uv + (cos_theta * *normal));
+    let r_out_parallel = -f32::sqrt(f32::abs(1.0 - r_out_perp.length_squared())) * *normal;
+    return r_out_perp + r_out_parallel;
+}
+
 fn reflect(v: &Vec3A, normal: &Vec3A) -> Vec3A {
     return *v - (2.0 * v.dot(*normal)) * *normal;
 }
 
 #[inline]
 fn random() -> f32 {
+    // actually expensive
     return fastrand::f32();
 }
 
@@ -54,33 +69,23 @@ fn random_minmax(min: f32, max: f32) -> f32 {
     return (m * (max - min)) + min;
 }
 
-fn refract(uv: &Vec3A, normal: &Vec3A, etai_over_etat: &f32) -> Vec3A {
-    // no idea how this works.
-    let cos_theta = (-uv.dot(*normal)).min(1.0);
-    let r_out_perp: Vec3A = *etai_over_etat * (*uv + (cos_theta * *normal));
-    let r_out_parallel: Vec3A = (-(1.0 - r_out_perp.length_squared()).abs().sqrt()) * *normal;
-    return r_out_perp + r_out_parallel;
-}
-
+// mathworld.wolfram.com/SpherePointPicking.html
+// https://karthikkaranth.me/blog/generating-random-points-in-a-sphere/
+#[inline]
 fn random_unit_in_sphere() -> Vec3A {
-    let min = -1.0;
-    let max = 1.0;
-
-    let mut point = Vec3A::new(0.0, 0.0, 0.0);
-
-    while (true) {
-        point = Vec3A::new(
-            random_minmax(min, max),
-            random_minmax(min, max),
-            random_minmax(min, max),
-        );
-        if point.length_squared() >= 1.0 {
-            continue;
-        }
-        break;
-    }
-
-    return point;
+    let u = random();
+    let v = random();
+    let theta = u * 2.0 * std::f32::consts::PI;
+    let phi = f32::acos(2.0 * v - 1.0);
+    let r = random().cbrt();
+    let sin_theta = f32::sin(theta);
+    let cos_theta = f32::cos(theta);
+    let sin_phi = f32::sin(phi);
+    let cos_hi = f32::cos(phi);
+    let x = r * sin_phi * cos_theta;
+    let y = r * sin_phi * sin_theta;
+    let z = r * cos_hi;
+    return Vec3A::new(x, y, z);
 }
 
 fn random_unit_vector() -> Vec3A {
@@ -104,17 +109,28 @@ struct Camera {
 }
 
 impl Camera {
-    fn new(aspect_ratio: f32) -> Camera {
-        let viewport_width = 2.0;
-        let viewport_height = viewport_width / aspect_ratio;
+    fn new(
+        look_from: Vec3A,
+        look_at: Vec3A,
+        up: Vec3A,
+        vertical_fov: f32,
+        aspect_ratio: f32,
+    ) -> Camera {
+        let theta: f32 = vertical_fov.to_radians();
+        let h = f32::tan(theta / 2.0);
+
+        let viewport_height = 2.0 * h;
+        let viewport_width = aspect_ratio * viewport_height;
+
+        let direciton_w = (look_from - look_at).normalize();
+        let u = up.cross(direciton_w).normalize();
+        let v = direciton_w.cross(u);
+
         let focal_length = 1.0;
-        let origin: Vec3A = Vec3A::new(0.0, 0.0, 0.0);
-        let horizontal: Vec3A = Vec3A::new(viewport_width, 0.0, 0.0);
-        let vertical: Vec3A = Vec3A::new(0.0, viewport_height, 0.0);
-        let lower_left_corner: Vec3A = origin
-            - Vec3A::new(0.0, viewport_width, 0.0) / 2.0
-            - Vec3A::new(viewport_height, 0.0, 0.0) / 2.0
-            - Vec3A::new(0.0, 0.0, focal_length);
+        let origin: Vec3A = look_from;
+        let horizontal: Vec3A = viewport_width * u;
+        let vertical: Vec3A = viewport_height * v;
+        let lower_left_corner: Vec3A = origin - (horizontal / 2.0) - (vertical / 2.0) - direciton_w;
 
         return Camera {
             origin: origin,
@@ -163,7 +179,7 @@ struct HitRecord {
     normal: Vec3A,
     hit_dist: f32,
     front_face: bool,
-    material: Box<dyn MaterialTrait>,
+    material: Box<MaterialTrait + Send + Sync>,
 }
 
 impl Default for HitRecord {
@@ -212,9 +228,7 @@ impl MaterialTrait for Lambertian {
             scatter_direction = hit_record.normal;
         }
 
-        attenuation.x = self.albedo.x;
-        attenuation.y = self.albedo.y;
-        attenuation.z = self.albedo.z;
+        *attenuation = self.albedo;
 
         scattered.origin = hit_record.point;
         scattered.direction = scatter_direction;
@@ -246,9 +260,7 @@ impl MaterialTrait for Metal {
         }
         scattered.direction = reflected + (computed_fuzz);
 
-        attenuation.x = self.albedo.x;
-        attenuation.y = self.albedo.y;
-        attenuation.z = self.albedo.z;
+        *attenuation = self.albedo;
 
         return scattered.direction.dot(hit_record.normal) > 0.0;
     }
@@ -278,9 +290,20 @@ impl MaterialTrait for Dielectric {
         };
 
         let unit_direction: Vec3A = ray.direction.normalize();
-        let refracted: Vec3A = refract(&unit_direction, &hit_record.normal, &refraction_ratio);
+        let cos_theta: f32 = f32::min((-unit_direction).dot(hit_record.normal), 1.0);
+
+        let sin_theta = f32::sqrt(1.0 - (cos_theta * cos_theta));
+
+        let cannot_refract: bool = refraction_ratio * sin_theta > 1.0;
+        let mut direction: Vec3A;
+        if cannot_refract || reflectance(&cos_theta, &refraction_ratio) > random() {
+            direction = reflect(&unit_direction, &hit_record.normal);
+        } else {
+            direction = refract(&unit_direction, &hit_record.normal, &refraction_ratio);
+        }
+
         scattered.origin = hit_record.point;
-        scattered.direction = refracted;
+        scattered.direction = direction;
         return true;
     }
 }
@@ -303,7 +326,7 @@ trait Hittable {
 struct Sphere {
     radius: f32,
     origin: Vec3A,
-    material: Box<dyn MaterialTrait>,
+    material: Box<MaterialTrait + Send + Sync>,
 }
 
 impl Hittable for Sphere {
@@ -342,7 +365,7 @@ impl Hittable for Sphere {
 }
 
 pub struct HittableScene {
-    hittables_list: Vec<Box<dyn Hittable>>,
+    hittables_list: Vec<Sphere>,
 }
 
 impl Hittable for HittableScene {
@@ -394,31 +417,32 @@ fn ray_color(ray: &Ray, scene: &HittableScene, depth: &i32) -> Color {
     return (1.0 - time) * Color::new(1.0, 1.0, 1.0) + (time * Color::new(0.5, 0.7, 1.0));
 }
 
-fn get_epoch_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-}
-
 fn main() {
     let aspect_ratio = 9.0 / 16.0;
-    let image_width: i32 = (256.0) as i32;
-    let image_height: i32 = ((image_width as f32) * aspect_ratio) as i32;
+    let image_width: u32 = 256;
+    let image_height: u32 = ((image_width as f32) * aspect_ratio) as u32;
 
-    let camera: Camera = Camera::new(aspect_ratio);
+    let max_depth: u32 = 4;
+    let samples_per_pixel: i32 = 5;
 
+    let mut camera: Camera = Camera::new(
+        Vec3A::new(0.0, 0.0, 1.0),
+        Vec3A::new(0.0, 0.0, -1.0),
+        Vec3A::new(0.0, 1.0, 0.0),
+        90.0,
+        aspect_ratio,
+    );
     let window_scale = 4.0;
 
     let mut window: PistonWindow = WindowSettings::new(
-        "Raytracer",
+        "Rust Rayon Raytracer",
         (
             (image_width as f32 * window_scale) as u32,
             (image_height as f32 * window_scale) as u32,
         ),
     )
     .exit_on_esc(true)
-    .vsync(false)
+    .vsync(true)
     .resizable(false)
     .graphics_api(OpenGL::V3_2)
     .build()
@@ -437,65 +461,65 @@ fn main() {
     let mut texture: G2dTexture =
         Texture::from_image(&mut texture_context, &canvas, &TextureSettings::new()).unwrap();
 
+    let mut scene: HittableScene = HittableScene {
+        hittables_list: Vec::new(),
+    };
+
+    // let r = f32::cos(std::f32::consts::PI / 4.0);
+    // scene.hittables_list.push(Box::new(Sphere {
+    //     origin: Vec3A::new(-r, 0.0, -1.0),
+    //     radius: r,
+    //     material: Box::new(Lambertian {
+    //         albedo: Color::new(0.0, 0.0, 1.0),
+    //     }),
+    // }));
+
+    // scene.hittables_list.push(Box::new(Sphere {
+    //     origin: Vec3A::new(r, 0.0, -1.0),
+    //     radius: r,
+    //     material: Box::new(Lambertian {
+    //         albedo: Color::new(1.0, 0.0, 0.0),
+    //     }),
+    // }));
+
+    //Ground
+    scene.hittables_list.push(Sphere {
+        origin: Vec3A::new(0.0, -100.5, -1.0),
+        radius: 100.0,
+        material: Box::new(Lambertian {
+            albedo: Color::new(0.8, 0.8, 0.0),
+        }),
+    });
+
+    scene.hittables_list.push(Sphere {
+        origin: Vec3A::new(0.0, 0.0, -1.0),
+        radius: 0.5,
+        material: Box::new(Lambertian {
+            albedo: Color::new(0.1, 0.2, 0.5),
+        }),
+    });
+
+    scene.hittables_list.push(Sphere {
+        origin: Vec3A::new(-1.0, 0.0, -1.0),
+        radius: -0.4,
+        material: Box::new(Dielectric { ir: 1.5 }),
+    });
+
+    scene.hittables_list.push(Sphere {
+        origin: Vec3A::new(1.0, 0.0, -1.0),
+        radius: 0.5,
+        material: Box::new(Metal {
+            albedo: Color::new(0.8, 0.6, 0.2),
+            fuzz: 0.0,
+        }),
+    });
+
     let mut time: u128 = get_epoch_ms();
     let mut delta: f32 = 0.0;
 
     let mut tick: i32 = 0;
 
-    let mut scene: HittableScene = HittableScene {
-        hittables_list: Vec::new(),
-    };
-
-    // Ground
-    scene.hittables_list.push(Box::new(Sphere {
-        origin: Vec3A::new(0.0, -100.5, -1.0),
-        radius: 100.0,
-        material: Box::new(Lambertian {
-            albedo: Color::new(0.4, 0.8, 0.2),
-        }),
-    }));
-
-    // scene.hittables_list.push(Box::new(Sphere {
-    //     origin: Vec3A::new(0.0, 0.0, -1.0),
-    //     radius: 0.5,
-    //     material: Box::new(Lambertian {
-    //         albedo: Color::new(0.7, 0.3, 0.3),
-    //     }),
-    // }));
-
-    // scene.hittables_list.push(Box::new(Sphere {
-    //     origin: Vec3A::new(-1.0, 0.0, -1.0),
-    //     radius: 0.5,
-    //     material: Box::new(Metal {
-    //         albedo: Color::new(0.8, 0.8, 0.8),
-    //         fuzz: 0.3,
-    //     }),
-    // }));
-
-    scene.hittables_list.push(Box::new(Sphere {
-        origin: Vec3A::new(0.0, 0.0, -1.0),
-        radius: 0.5,
-        material: Box::new(Dielectric { ir: 1.5 }),
-    }));
-
-    scene.hittables_list.push(Box::new(Sphere {
-        origin: Vec3A::new(-1.0, 0.0, -1.0),
-        radius: 0.5,
-        material: Box::new(Dielectric { ir: 1.5 }),
-    }));
-
-    scene.hittables_list.push(Box::new(Sphere {
-        origin: Vec3A::new(1.0, 0.0, -1.0),
-        radius: 0.5,
-        material: Box::new(Metal {
-            albedo: Color::new(0.2, 0.54, 0.8),
-            fuzz: 1.0,
-        }),
-    }));
-    let max_depth: u32 = 4;
-
-    let samples_per_pixel: i32 = 5;
-
+    let pixel_amount = image_width * image_height;
     while let Some(event) = window.next() {
         if let Some(_) = event.render_args() {
             texture.update(&mut texture_context, &canvas).unwrap();
@@ -520,22 +544,27 @@ fn main() {
                 scaled_color.y = scaled_color.y.sqrt();
                 scaled_color.z = scaled_color.z.sqrt();
 
+                scaled_color *= 255.999;
+
                 canvas.put_pixel(
                     position.x,
-                    (image_height as u32 - 1) - position.y,
+                    image_height - 1 - position.y,
                     im::Rgba([
-                        (scaled_color.x as f32 * 255.999) as u8,
-                        (scaled_color.y as f32 * 255.999) as u8,
-                        (scaled_color.z as f32 * 255.999) as u8,
+                        scaled_color.x as u8,
+                        scaled_color.y as u8,
+                        scaled_color.z as u8,
                         255,
                     ]),
                 )
             };
 
-            for y in (0..image_height).rev() {
-                for x in 0..image_width {
-                    let mut color: Color = Color::new(0.0, 0.0, 0.0);
+            let pixels: Vec<Vec3A> = (0..pixel_amount)
+                .into_par_iter()
+                .map(|pixel_index: u32| {
+                    let x: u32 = pixel_index % image_width;
+                    let y: u32 = (pixel_index as f32 / image_width as f32) as u32;
 
+                    let mut color: Color = Color::new(0.0, 0.0, 0.0);
                     for sample in 0..samples_per_pixel {
                         let mut rng_x = 0.0;
                         let mut rng_y = 0.0;
@@ -552,8 +581,20 @@ fn main() {
                         color += ray_color(&ray, &scene, &(max_depth as i32));
                     }
 
-                    write_color(&UVec2::new(x as u32, y as u32), &color, &samples_per_pixel);
+                    return color;
+                })
+                .collect();
+
+            for (index, color) in pixels.iter().enumerate() {
+                let x: u32 = index as u32 % image_width;
+                let y: u32 = (index as f32 / image_width as f32) as u32;
+                let mut new_color = *color;
+
+                if (is_nearly_zero(&new_color)) {
+                    new_color = Vec3A::new(1.0, 1.0, 1.0);
                 }
+
+                write_color(&UVec2::new(x, y), &new_color, &samples_per_pixel);
             }
 
             let new_time = get_epoch_ms();
