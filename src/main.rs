@@ -601,11 +601,6 @@ fn main() {
                 let x: u32 = index as u32 % image_width;
                 let y: u32 = (index as f32 / image_width as f32) as u32;
                 let mut new_color = *color;
-
-                if (is_nearly_zero(&new_color)) {
-                    new_color = Vec3A::new(1.0, 1.0, 1.0);
-                }
-
                 write_color(&UVec2::new(x, y), &new_color, &samples_per_pixel);
             }
 
