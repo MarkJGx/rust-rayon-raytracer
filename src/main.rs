@@ -18,6 +18,7 @@ use piston_window::TextureContext;
 use piston_window::TextureSettings;
 use piston_window::Transformed;
 use piston_window::WindowSettings;
+use std::cmp;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastrand::*;
@@ -51,6 +52,14 @@ fn random() -> f32 {
 fn random_minmax(min: f32, max: f32) -> f32 {
     let m: f32 = random();
     return (m * (max - min)) + min;
+}
+
+fn refract(uv: &Vec3A, normal: &Vec3A, etai_over_etat: &f32) -> Vec3A {
+    // no idea how this works.
+    let cos_theta = (-uv.dot(*normal)).min(1.0);
+    let r_out_perp: Vec3A = *etai_over_etat * (*uv + (cos_theta * *normal));
+    let r_out_parallel: Vec3A = (-(1.0 - r_out_perp.length_squared()).abs().sqrt()) * *normal;
+    return r_out_perp + r_out_parallel;
 }
 
 fn random_unit_in_sphere() -> Vec3A {
@@ -245,6 +254,37 @@ impl MaterialTrait for Metal {
     }
 }
 
+#[derive(Clone)]
+struct Dielectric {
+    ir: f32,
+}
+
+impl MaterialTrait for Dielectric {
+    fn scatter(
+        &self,
+        ray: &Ray,
+        hit_record: &HitRecord,
+        attenuation: &mut Color,
+        scattered: &mut Ray,
+    ) -> bool {
+        attenuation.x = 1.0;
+        attenuation.y = 1.0;
+        attenuation.z = 1.0;
+
+        let refraction_ratio = if hit_record.front_face {
+            1.0 / self.ir
+        } else {
+            self.ir
+        };
+
+        let unit_direction: Vec3A = ray.direction.normalize();
+        let refracted: Vec3A = refract(&unit_direction, &hit_record.normal, &refraction_ratio);
+        scattered.origin = hit_record.point;
+        scattered.direction = refracted;
+        return true;
+    }
+}
+
 impl HitRecord {
     #[inline]
     fn set_face_normal(&mut self, ray: &Ray, outward_normal: &Vec3A) {
@@ -363,12 +403,12 @@ fn get_epoch_ms() -> u128 {
 
 fn main() {
     let aspect_ratio = 9.0 / 16.0;
-    let image_width: i32 = (128.0) as i32;
+    let image_width: i32 = (256.0) as i32;
     let image_height: i32 = ((image_width as f32) * aspect_ratio) as i32;
 
     let camera: Camera = Camera::new(aspect_ratio);
 
-    let window_scale = 8.0;
+    let window_scale = 4.0;
 
     let mut window: PistonWindow = WindowSettings::new(
         "Raytracer",
@@ -415,21 +455,33 @@ fn main() {
         }),
     }));
 
+    // scene.hittables_list.push(Box::new(Sphere {
+    //     origin: Vec3A::new(0.0, 0.0, -1.0),
+    //     radius: 0.5,
+    //     material: Box::new(Lambertian {
+    //         albedo: Color::new(0.7, 0.3, 0.3),
+    //     }),
+    // }));
+
+    // scene.hittables_list.push(Box::new(Sphere {
+    //     origin: Vec3A::new(-1.0, 0.0, -1.0),
+    //     radius: 0.5,
+    //     material: Box::new(Metal {
+    //         albedo: Color::new(0.8, 0.8, 0.8),
+    //         fuzz: 0.3,
+    //     }),
+    // }));
+
     scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(0.0, 0.0, -1.0),
         radius: 0.5,
-        material: Box::new(Lambertian {
-            albedo: Color::new(0.7, 0.3, 0.3),
-        }),
+        material: Box::new(Dielectric { ir: 1.5 }),
     }));
 
     scene.hittables_list.push(Box::new(Sphere {
         origin: Vec3A::new(-1.0, 0.0, -1.0),
         radius: 0.5,
-        material: Box::new(Metal {
-            albedo: Color::new(0.8, 0.8, 0.8),
-            fuzz: 0.3,
-        }),
+        material: Box::new(Dielectric { ir: 1.5 }),
     }));
 
     scene.hittables_list.push(Box::new(Sphere {
@@ -440,9 +492,9 @@ fn main() {
             fuzz: 1.0,
         }),
     }));
-    let max_depth: u32 = 10;
+    let max_depth: u32 = 4;
 
-    let samples_per_pixel: i32 = 50;
+    let samples_per_pixel: i32 = 5;
 
     while let Some(event) = window.next() {
         if let Some(_) = event.render_args() {
